@@ -58,8 +58,8 @@ export default function TimezoneStrip({ baseUtc, sourceZone }: Props) {
   const sub = useMemo(() => subsolarPoint(baseUtc), [baseUtc]);
 
   const nightPath = useMemo(
-    () => buildNightPath(sub, project),
-    [sub, project],
+    () => buildNightPath(sub, width, HEIGHT),
+    [sub, width, HEIGHT],
   );
 
   const sourceCity = useMemo(
@@ -287,36 +287,46 @@ export default function TimezoneStrip({ baseUtc, sourceZone }: Props) {
   );
 }
 
-// Build a closed SVG path covering the night hemisphere — sampled in the
-// rotated frame so the curve stays continuous regardless of where the
-// projection is centered.
+// Build a closed SVG path covering the night hemisphere. Uses a custom
+// equirectangular projection (no antimeridian clipping) so the polygon
+// spans the full visible map width — d3's clip wraps any point past the
+// rotated antimeridian back to the left edge, which would collapse the
+// polar-close points to (0, H) and shade the wrong half of the map.
 function buildNightPath(
   sub: { lon: number; lat: number },
-  projection: (coords: [number, number]) => [number, number] | null,
+  width: number,
+  height: number,
 ): string {
   const declRaw = sub.lat;
   const decl =
     Math.abs(declRaw) < 0.5 ? (declRaw >= 0 ? 0.5 : -0.5) : declRaw;
   const declRad = (decl * Math.PI) / 180;
 
+  const project = (lon: number, lat: number): [number, number] => {
+    let dLon = lon - CENTER_LON;
+    while (dLon > 180) dLon -= 360;
+    while (dLon < -180) dLon += 360;
+    return [
+      ((dLon + 180) / 360) * width,
+      ((90 - lat) / 180) * height,
+    ];
+  };
+
   const pts: [number, number][] = [];
-  // Sample longitudes relative to the central meridian so the projected
-  // x-coordinate moves smoothly from the left edge to the right edge.
   for (let dLon = -180; dLon <= 180; dLon += 1) {
     const lon = CENTER_LON + dLon;
     const lonRel = ((lon - sub.lon) * Math.PI) / 180;
     const lat =
       (Math.atan(-Math.cos(lonRel) / Math.tan(declRad)) * 180) / Math.PI;
-    const xy = projection([lon, lat]);
-    if (xy) pts.push(xy);
+    pts.push(project(lon, lat));
   }
 
-  // Close around the polar night cap (the hemisphere opposite the sun).
-  const polarLat = decl > 0 ? -90 : 90;
-  const rightEdge = projection([CENTER_LON + 180, polarLat]);
-  const leftEdge = projection([CENTER_LON - 180, polarLat]);
-  if (rightEdge) pts.push(rightEdge);
-  if (leftEdge) pts.push(leftEdge);
+  // Close around the polar night cap. For decl > 0 (sun in N), the dark
+  // hemisphere wraps the South Pole — close along the bottom edge of the
+  // map. For decl < 0, close along the top edge instead.
+  const polarY = decl > 0 ? height : 0;
+  pts.push([width, polarY]);
+  pts.push([0, polarY]);
 
   return (
     "M " +
